@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
+import json
 import re
 
 import pandas as pd
 import streamlit as st
 
 CSV_PATH = Path(__file__).with_name("sessions_temp.csv")
+STATE_PATH = Path(__file__).with_name("plan_state.json")
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 SWIM_DISTANCE_KM = 2.0
+STATE_VERSION = 1
 
 
 @st.cache_data
@@ -61,6 +64,30 @@ def session_distances(session_text: str) -> dict[str, float]:
         if "run" in segment:
             distances["run"] += extract_km(segment)
     return distances
+
+
+def load_state() -> dict:
+    if not STATE_PATH.exists():
+        return {}
+    try:
+        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if data.get("version") != STATE_VERSION:
+        return {}
+    return data.get("state", {})
+
+
+def save_state(state: dict) -> None:
+    payload = {
+        "version": STATE_VERSION,
+        "saved_at": date.today().isoformat(),
+        "state": state,
+    }
+    try:
+        STATE_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError:
+        st.warning("Unable to save state to disk.")
 
 
 st.set_page_config(page_title="Training Plan Tracker", layout="wide")
@@ -130,6 +157,13 @@ base_start = align_to_monday(raw_week_starts[0])
 week_starts = [base_start + timedelta(days=7 * idx) for idx in range(len(plan_df))]
 plan_df["Week Commencing"] = week_starts
 today = date.today()
+
+if "state_loaded" not in st.session_state:
+    restored_state = load_state()
+    for key, value in restored_state.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+    st.session_state["state_loaded"] = True
 
 plan_start = week_starts[0]
 plan_end = week_starts[-1] + timedelta(days=6)
@@ -267,3 +301,16 @@ for week_idx, row in plan_df.iterrows():
             st.session_state[p_key] = chosen_date.isoformat()
 
         cell.checkbox("Done", key=c_key)
+
+persisted_state = {}
+for week_idx in range(len(plan_df)):
+    for session_col in session_cols:
+        c_key = completion_key(week_idx, session_col)
+        if c_key in st.session_state:
+            persisted_state[c_key] = bool(st.session_state.get(c_key, False))
+        p_key = planned_key(week_idx, session_col)
+        if p_key in st.session_state:
+            persisted_state[p_key] = st.session_state.get(p_key)
+
+if st.session_state.get("state_loaded"):
+    save_state(persisted_state)
